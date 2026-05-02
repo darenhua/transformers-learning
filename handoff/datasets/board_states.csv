@@ -1,0 +1,14 @@
+fen,description
+"W:W21,22,23,24,25,26,27,28,29,30,31,32:B1,2,3,4,5,6,7,8,9,10,11,12",opening — starting position
+"W:W16,17,22,23,25,26,27,28,29,30,31,32:B1,2,3,4,6,7,8,9,10,12,14,15",early game — a few moves in
+"W:W14,15,20,21,22,23,25,27,29,30,31,32:B1,2,3,4,5,6,7,8,12,17,18",early game — pieces contacting
+"W:W11,19,20,21,22,23,25,28,29,30,31,32:B1,3,4,5,6,7,8,10,12,16,17",early game — open center
+"W:W16,20,24,25,26,27,28,29,31:B3,5,6,7,8,11,12,17,18,21",mid game — material even
+"W:W17,19,21,22,23,24,25,26,27,28,30,32:B1,2,3,4,6,8,9,11,12,13,16,18",mid game — crowded board
+"W:W15,19,20,23,25,27,28,29,30:B1,2,3,6,8,9,11,14,16,K31",mid game — black has a king
+"W:W6,14,18,19,22,25,29,30,31:B2,3,4,5,7,9,11,12,17,K32",mid game — white advanced
+"W:W10,14,19,20,22,23,25,26,27,29,32:B2,4,5,6,7,8,9,12,16,17",mid game — contested center
+"W:W16,21,23,24,25,26,28,29,30,31,32:B1,2,3,4,5,6,7,8,12,14,15,22",mid game — balanced tension
+"W:WK1,K10:BK20,K32",endgame — kings only (2v2)
+"W:WK5,K14,K23:BK1,K10",endgame — kings only (3v2 white advantage)
+"W:WK32:BK1,K5",endgame — lone king vs two kings

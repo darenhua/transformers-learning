@@ -1,4 +1,9 @@
 optimal_move_smoke.jsonl
-valid_move_smoke.jsonl
 .env
+valid_move_smoke.jsonl
 __marimo__
+
+optimal_move_test.jsonl
+valid_move_test.jsonl
+scan
+__pycache__

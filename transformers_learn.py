@@ -6,18 +6,6 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    # from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    # model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    # tokenizer = AutoTokenizer.from_pretrained(model_id)
-    # model = AutoModelForCausalLM.from_pretrained(model_id, dtype="auto", device_map="auto")
-
-    # model_inputs = tokenizer(["The secret to baking a good cake is "], return_tensors="pt").to(model.device)
-    return
-
-
-@app.cell
-def _():
     import marimo as mo
 
     return (mo,)
@@ -62,51 +50,66 @@ def _(board):
 def _():
     from draughts import Board, Server, AlphaBetaEngine, HubEngine, Benchmark, BaseAgent
 
-    return AlphaBetaEngine, BaseAgent, Benchmark, Board, Server
+    return AlphaBetaEngine, BaseAgent, Benchmark, Board, HubEngine, Server
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## server shit... this lets me start up a server
+    """)
+    return
 
 
 @app.cell
-def _(AlphaBetaEngine, Board, Server):
+def _(mo):
+    start_server_button = mo.ui.run_button(label="Start server")
+    start_server_button
+    return (start_server_button,)
+
+
+@app.cell
+def _(AlphaBetaEngine, Board, Server, start_server_button):
     import threading
 
-    server = Server(
-        board=Board(),
-        white_engine=AlphaBetaEngine(depth_limit=6),
-        black_engine=AlphaBetaEngine(depth_limit=6),
-    )
+    if start_server_button.value:
+        server = Server(
+            board=Board(),
+            white_engine=AlphaBetaEngine(depth_limit=6),
+            black_engine=AlphaBetaEngine(depth_limit=6),
+        )
 
+        def _run():
+            server.run()  # this thread has no running loop, so asyncio.run() works fine
 
-    def _run():
-        server.run()  # this thread has no running loop, so asyncio.run() works fine
-
-    threading.Thread(target=_run, daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
+        print("server started")
     return
 
 
 @app.cell
-def _(BaseAgent, Board):
-    class GreedyAgent(BaseAgent):
-        def select_move(self, board):
-            chosen_move = max(board.legal_moves, key=lambda m: len(m.captured_list))
-            print(chosen_move)
-            return chosen_move
-
-    board_2 = Board()
-    agent = GreedyAgent()
-    move = agent.select_move(board_2)
-    print(move)
-    return (agent,)
+def _(mo):
+    run_benchmark_button = mo.ui.run_button(label="Run benchmark")
+    run_benchmark_button
+    return (run_benchmark_button,)
 
 
 @app.cell
-def _(AlphaBetaEngine, Benchmark, agent):
-    stats = Benchmark(agent.as_engine(), AlphaBetaEngine(depth_limit=4), games=10).run()
-    return
+def _(AlphaBetaEngine, BaseAgent, Benchmark, Board, run_benchmark_button):
+    if run_benchmark_button.value:
+        class GreedyAgent(BaseAgent):
+            def select_move(self, board):
+                chosen_move = max(board.legal_moves, key=lambda m: len(m.captured_list))
+                print(chosen_move)
+                return chosen_move
 
+        board_2 = Board()
+        agent = GreedyAgent()
+        move = agent.select_move(board_2)
+        print(move)
 
-@app.cell
-def _():
-    print("hello world")
+        stats = Benchmark(agent.as_engine(), AlphaBetaEngine(depth_limit=4), games=10).run()
+        print(stats)
     return
 
 
@@ -121,11 +124,27 @@ def _(mo):
 
 
 @app.cell
-def _(AlphaBetaEngine, Board):
+def hubblock(AlphaBetaEngine, Board, HubEngine):
     import json
     import random
 
     MAX_MOVES_PER_GAME = 300
+    SCAN_PATH = "scan/scan_31/scan_linux"
+
+    # pydraughts 1.7.1's HubEngine._read_line uses select() + readline() on the
+    # text stream, which deadlocks when Scan emits several lines in one OS chunk:
+    # the lines land in Python's TextIOWrapper buffer, but select stops reporting
+    # the underlying fd as readable, so subsequent reads time out forever. Swap
+    # in a plain blocking readline; Scan responds promptly.
+    def _hub_blocking_read_line(self, timeout: float = 1.0):
+        if self.process is None or self.process.stdout is None:
+            return None
+        line = self.process.stdout.readline()
+        if not line:
+            return None
+        return line.strip()
+    HubEngine._read_line = _hub_blocking_read_line
+
 
     def generate_valid_move_dataset(num_games=1000, output_path="valid_move_dataset.jsonl"):
         engine = AlphaBetaEngine(depth_limit=2)
@@ -146,6 +165,7 @@ def _(AlphaBetaEngine, Board):
                 records.append({
                     "fen": board.fen,
                     "move": str(move),
+                    "game_idx": i,
                 })
                 board.push(move)
 
@@ -155,32 +175,40 @@ def _(AlphaBetaEngine, Board):
         print(f"Saved {len(records)} records to {output_path}")
 
 
-    def generate_optimal_move_dataset(num_games=1000, output_path="optimal_move_dataset.jsonl"):
-        strong_engine = AlphaBetaEngine(depth_limit=4)
-        weak_engine = AlphaBetaEngine(depth_limit=2)
+    def generate_optimal_move_dataset(
+        num_games=1000,
+        output_path="optimal_move_dataset.jsonl",
+        strong_time=0.3,
+        weak_time=0.05,
+    ):
         records = []
         skipped = 0
-        for i in range(num_games):
-            if i % 100 == 0:
-                print(f"Optimal move game {i}/{num_games}")
-            board = Board()
-            for _ in range(MAX_MOVES_PER_GAME):
-                if not board.legal_moves:
-                    break
-                chosen = strong_engine.get_best_move(board)
-                if chosen is None:
-                    break
-                rejected = weak_engine.get_best_move(board)
-                chosen_str = str(chosen)
-                if rejected is None or str(rejected) == chosen_str:
-                    skipped += 1
-                else:
-                    records.append({
-                        "fen": board.fen,
-                        "chosen": chosen_str,
-                        "rejected": str(rejected),
-                    })
-                board.push(chosen)
+        with HubEngine(SCAN_PATH, time_limit=strong_time, init_timeout=60.0) as strong_engine, \
+             HubEngine(SCAN_PATH, time_limit=weak_time, init_timeout=60.0) as weak_engine:
+            for i in range(num_games):
+                if i % 10 == 0:
+                    print(f"Optimal move game {i}/{num_games}")
+                strong_engine.new_game()
+                weak_engine.new_game()
+                board = Board()
+                for _ in range(MAX_MOVES_PER_GAME):
+                    if not board.legal_moves:
+                        break
+                    chosen = strong_engine.get_best_move(board)
+                    if chosen is None:
+                        break
+                    rejected = weak_engine.get_best_move(board)
+                    chosen_str = str(chosen)
+                    if rejected is None or str(rejected) == chosen_str:
+                        skipped += 1
+                    else:
+                        records.append({
+                            "fen": board.fen,
+                            "chosen": chosen_str,
+                            "rejected": str(rejected),
+                            "game_idx": i,
+                        })
+                    board.push(chosen)
 
         with open(output_path, "w") as f:
             for r in records:
@@ -191,12 +219,7 @@ def _(AlphaBetaEngine, Board):
 
 
 @app.cell
-def _(
-    AlphaBetaEngine,
-    Board,
-    generate_optimal_move_dataset,
-    generate_valid_move_dataset,
-):
+def _(AlphaBetaEngine, Board):
     print("=== smoke test: 2 games each ===")
 
     _b = Board()
@@ -206,19 +229,23 @@ def _(
     print(f"sanity: best_move={_m!r}, str={str(_m)!r}")
     _b.push(_m)
     print(f"sanity: post-push fen={_b.fen!r}")
-
-    generate_valid_move_dataset(num_games=2, output_path="valid_move_smoke.jsonl")
-    generate_optimal_move_dataset(num_games=2, output_path="optimal_move_smoke.jsonl")
     return
 
 
 @app.cell
 def _(mo):
+    # title = mo.md("1000 game dataset generation")
     run_full_button = mo.ui.run_button(
-        label="Run full 1000-game dataset generation (slow)"
+        label="sft (minimax depth2 versus itself)"
     )
-    run_full_button
-    return (run_full_button,)
+    run_optimal_button = mo.ui.run_button(
+        label="dpo (minimax depth2 versus scan)"
+    )
+    mo.ui.array([
+        run_full_button,
+        run_optimal_button
+    ])
+    return run_full_button, run_optimal_button
 
 
 @app.cell
@@ -226,10 +253,12 @@ def _(
     generate_optimal_move_dataset,
     generate_valid_move_dataset,
     run_full_button,
+    run_optimal_button,
 ):
-    if run_full_button.value:
-        generate_valid_move_dataset(num_games=1000)
-        generate_optimal_move_dataset(num_games=1000)
+    if run_full_button.value:    
+        generate_valid_move_dataset(num_games=20, output_path="valid_move_smoke.jsonl")
+    if run_optimal_button.value:
+        generate_optimal_move_dataset(num_games=20, output_path="optimal_move_smoke.jsonl")
     return
 
 
@@ -237,6 +266,8 @@ def _(
 def _(mo):
     mo.md(r"""
     ## convert to TRL SFT prompt/completion format and train tiny GPT-2 (124M)
+
+    important: for cpu!
     """)
     return
 
@@ -305,16 +336,6 @@ def _(gpt2_model, gpt2_tokenizer, train_button, training_dataset):
             ),
         )
         trainer.train()
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    aight lemmme just yap in ts rq
-
-    for gleam what he wants me to do is verbatim:
-    """)
     return
 
 
