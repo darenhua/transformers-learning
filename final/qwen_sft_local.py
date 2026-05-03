@@ -30,15 +30,17 @@ def _():
 @app.cell
 def _(mo):
     mo.md("""
-    # GPT-2 SFT — overfitting smoke test
+    # Qwen2.5-0.5B-Instruct full SFT — overfitting smoke test
 
-    This notebook imports `training-jobs/gpt2_sft.py` and runs it on a tiny
-    slice of `valid_move_smoke.jsonl` for many epochs. The point is to
-    *prove the training loop works* before committing to a long overnight
-    run — if loss collapses toward zero on 20 samples, the loop is fine.
+    Imports `training-jobs/qwen_sft.py` and overfits on a small slice of
+    `valid_move_smoke.jsonl`. Same prompt/completion format as the GPT-2
+    SFT (`f"{fen}
+    Move:"`) so the same harness/inference path works
+    without code changes.
 
-    The same script is what the overnight bash runner will invoke; this
-    notebook is just a thin UI harness around it.
+    On a T4 (compute 7.5) Qwen 0.5B trains in fp16 with grad checkpointing
+    and per-device batch 2, eff batch 8 — ~10 epochs on 20 samples drops
+    train loss into the 0.3–0.5 range.
     """)
     return
 
@@ -48,15 +50,13 @@ def _():
     import os
     import sys
 
-    # training-jobs/ has a hyphen so it can't be imported as a package; add
-    # it to sys.path so the underscore-named modules inside are importable.
     for _candidate in ("training-jobs", "final/training-jobs"):
         if os.path.isdir(_candidate) and _candidate not in sys.path:
             sys.path.insert(0, _candidate)
-    import gpt2_sft
     import inference as inference_mod
+    import qwen_sft
 
-    return gpt2_sft, inference_mod
+    return inference_mod, qwen_sft
 
 
 @app.cell
@@ -77,19 +77,16 @@ def _():
 def _(mo):
     mo.md("""
     ## Train
-
-    Trains on the full `valid_move_train.jsonl`. Drop `learning_rate` and
-    bump `epochs` for a longer run.
     """)
     return
 
 
 @app.cell
 def _(mo):
-    run_name = mo.ui.text(value="gpt2-sft", label="Run name")
+    run_name = mo.ui.text(value="qwen-sft", label="Run name")
     epochs = mo.ui.slider(1, 50, value=10, label="Epochs")
     learning_rate = mo.ui.number(
-        start=1e-6, stop=1e-2, value=1e-4, step=1e-5, label="Learning rate"
+        start=1e-6, stop=1e-3, value=5e-5, step=1e-5, label="Learning rate"
     )
     train_button = mo.ui.run_button(label="Train", kind="success")
     mo.vstack(
@@ -103,11 +100,11 @@ def _(mo):
 
 
 @app.cell
-def _(epochs, gpt2_sft, learning_rate, run_name, train_button):
+def _(epochs, learning_rate, qwen_sft, run_name, train_button):
     log_history = []
     last_saved_run = None
     if train_button.value:
-        result = gpt2_sft.train(
+        result = qwen_sft.train(
             run_name=run_name.value,
             epochs=epochs.value,
             max_samples=None,
@@ -153,7 +150,7 @@ def _(log_history, mo):
                 color=alt.Color("split:N", title="split"),
                 tooltip=["step", "value", "split"],
             )
-            .properties(width=600, height=260, title="GPT-2 SFT loss")
+            .properties(width=600, height=260, title="Qwen SFT loss")
         )
         _charts = [mo.ui.altair_chart(_loss_line)]
         if _metric_rows:
@@ -181,10 +178,6 @@ def _(log_history, mo):
 def _(mo):
     mo.md("""
     ## Load a checkpoint for inference
-
-    Lists every subdir under `checkpoints/` that contains a `config.json`
-    or `adapter_config.json`, plus the bare `gpt2` baseline. Click
-    **Refresh** after a new training run completes.
     """)
     return
 
@@ -202,7 +195,7 @@ def _(mo, refresh_button):
     import os as _os
 
     _ = refresh_button.value
-    options = ["gpt2"]
+    options = ["Qwen/Qwen2.5-0.5B-Instruct"]
     if _os.path.isdir("checkpoints"):
         for _name in sorted(_os.listdir("checkpoints")):
             _p = _os.path.join("checkpoints", _name)
@@ -258,10 +251,6 @@ def _(inference_model, inference_path, inference_tokenizer, torch):
 def _(mo):
     mo.md("""
     ## Smoke test
-
-    Builds a fresh `LLMAgent` and asks it for one move on the initial
-    board. An overfit GPT-2 should reproduce one of the moves it
-    memorized from the training set.
     """)
     return
 

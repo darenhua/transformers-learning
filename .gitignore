@@ -7,3 +7,5 @@ optimal_move_test.jsonl
 valid_move_test.jsonl
 scan
 __pycache__
+checkpoints/
+background_task.log

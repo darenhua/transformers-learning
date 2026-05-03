@@ -3,6 +3,7 @@
 # dependencies = [
 #     "marimo",
 #     "py-draughts>=1.6.4",
+#     "tqdm",
 # ]
 # ///
 
@@ -46,148 +47,23 @@ def _(mo):
 def _():
     from draughts import Board, AlphaBetaEngine, HubEngine
 
-    return AlphaBetaEngine, Board, HubEngine
+    return AlphaBetaEngine, Board
 
 
 @app.cell
-def _(AlphaBetaEngine, Board, HubEngine):
-    import json
-    import random
+def _():
+    import os
+    import sys
 
-    MAX_MOVES_PER_GAME = 300
+    for _root in (".", "final"):
+        if os.path.isdir(_root) and _root not in sys.path:
+            sys.path.insert(0, _root)
+    # All orchestration lives in _dataset_generate so the same code is
+    # used by this notebook and the headless background_task.sh runner.
+    import _dataset_generate as _gen
 
-    # pydraughts 1.7.1's HubEngine._read_line uses select() + readline() on
-    # the text stream, which deadlocks when Scan emits several lines in one
-    # OS chunk: the lines land in Python's TextIOWrapper buffer, but select
-    # stops reporting the underlying fd as readable, so subsequent reads
-    # time out forever. Swap in a plain blocking readline; Scan responds
-    # promptly.
-    def _hub_blocking_read_line(self, timeout: float = 1.0):
-        if self.process is None or self.process.stdout is None:
-            return None
-        line = self.process.stdout.readline()
-        if not line:
-            return None
-        return line.strip()
-
-    HubEngine._read_line = _hub_blocking_read_line
-
-    def write_records(records, output_base, test_size, seed):
-        """Write records as a single jsonl, or split into <base>_train.jsonl
-        + <base>_test.jsonl if test_size > 0. Returns [(path, count), ...]."""
-        if test_size <= 0 or len(records) == 0:
-            path = f"{output_base}.jsonl"
-            with open(path, "w") as f:
-                for r in records:
-                    f.write(json.dumps(r) + "\n")
-            return [(path, len(records))]
-
-        rng = random.Random(seed)
-        idxs = list(range(len(records)))
-        rng.shuffle(idxs)
-        n_test = max(1, int(round(len(records) * test_size)))
-        test_idx = set(idxs[:n_test])
-        train, test = [], []
-        for i, r in enumerate(records):
-            (test if i in test_idx else train).append(r)
-        paths = []
-        for split_name, rs in [("train", train), ("test", test)]:
-            p = f"{output_base}_{split_name}.jsonl"
-            with open(p, "w") as f:
-                for r in rs:
-                    f.write(json.dumps(r) + "\n")
-            paths.append((p, len(rs)))
-        return paths
-
-    def generate_valid_move_dataset(
-        num_games, output_base, test_size, random_ratio, seed
-    ):
-        """SFT format: {fen, move, game_idx}. minimax depth-2 self-play with
-        `random_ratio` chance per ply of a random legal move instead of
-        the engine's choice (so the model sees suboptimal positions, not
-        just on-policy minimax states)."""
-        rng = random.Random(seed)
-        engine = AlphaBetaEngine(depth_limit=2)
-        records = []
-        for i in range(num_games):
-            if num_games >= 100 and i % 100 == 0:
-                print(f"valid_move game {i}/{num_games}")
-            board = Board()
-            for _ in range(MAX_MOVES_PER_GAME):
-                if not board.legal_moves:
-                    break
-                if rng.random() >= random_ratio:
-                    move = engine.get_best_move(board)
-                else:
-                    move = rng.choice(list(board.legal_moves))
-                if move is None:
-                    break
-                records.append(
-                    {
-                        "fen": board.fen,
-                        "move": str(move),
-                        "game_idx": i,
-                    }
-                )
-                board.push(move)
-        print(
-            f"valid_move: collected {len(records)} records from {num_games} games"
-        )
-        return write_records(records, output_base, test_size, seed)
-
-    def generate_optimal_move_dataset(
-        num_games,
-        output_base,
-        test_size,
-        scan_path,
-        strong_time,
-        weak_time,
-        seed,
-    ):
-        """DPO format: {fen, chosen, rejected, game_idx}. Strong Scan picks
-        `chosen` and drives the trajectory; weak Scan picks `rejected` from
-        the same position. Ties are skipped (no preference signal)."""
-        records = []
-        skipped = 0
-        with (
-            HubEngine(
-                scan_path, time_limit=strong_time, init_timeout=60.0
-            ) as strong,
-            HubEngine(
-                scan_path, time_limit=weak_time, init_timeout=60.0
-            ) as weak,
-        ):
-            for i in range(num_games):
-                if num_games >= 10 and i % 10 == 0:
-                    print(f"optimal_move game {i}/{num_games}")
-                strong.new_game()
-                weak.new_game()
-                board = Board()
-                for _ in range(MAX_MOVES_PER_GAME):
-                    if not board.legal_moves:
-                        break
-                    chosen = strong.get_best_move(board)
-                    if chosen is None:
-                        break
-                    rejected = weak.get_best_move(board)
-                    chosen_str = str(chosen)
-                    if rejected is None or str(rejected) == chosen_str:
-                        skipped += 1
-                    else:
-                        records.append(
-                            {
-                                "fen": board.fen,
-                                "chosen": chosen_str,
-                                "rejected": str(rejected),
-                                "game_idx": i,
-                            }
-                        )
-                    board.push(chosen)
-        print(
-            f"optimal_move: collected {len(records)} records, skipped {skipped} ties"
-        )
-        return write_records(records, output_base, test_size, seed)
-
+    generate_valid_move_dataset = _gen.generate_valid_move_dataset
+    generate_optimal_move_dataset = _gen.generate_optimal_move_dataset
     return generate_optimal_move_dataset, generate_valid_move_dataset
 
 
@@ -212,25 +88,42 @@ def _(mo):
 
 @app.cell
 def _(mo):
+    import os as _os_ui
+
     output_base = mo.ui.text(
         value="valid_move",
         label="Output base name (no extension)",
         full_width=True,
     )
-    num_games = mo.ui.slider(1, 5000, value=20, label="Num games")
-    random_ratio = mo.ui.slider(
-        0.0,
-        1.0,
-        value=0.2,
-        step=0.05,
-        label="Random-move injection ratio (valid_move only)",
+    valid_target = mo.ui.number(
+        value=20000, start=100, stop=200000, step=100,
+        label="Target rows (valid_move SFT)",
+    )
+    optimal_target = mo.ui.number(
+        value=5000, start=100, stop=50000, step=100,
+        label="Target rows (optimal_move DPO)",
     )
     test_size = mo.ui.slider(
-        0.0,
-        0.5,
-        value=0.1,
-        step=0.05,
+        0.0, 0.5, value=0.1, step=0.05,
         label="Test split fraction (0 = single file)",
+    )
+    random_ratio = mo.ui.slider(
+        0.0, 1.0, value=0.2, step=0.05,
+        label="Random-move injection ratio (valid_move only)",
+    )
+    randomize_start_plies = mo.ui.slider(
+        0, 12, value=4, step=1,
+        label="Random opening plies (0..N random plies before recording)",
+    )
+    opening_pct = mo.ui.number(
+        value=30, start=0, stop=100, step=5, label="Opening %",
+    )
+    endgame_pct = mo.ui.number(
+        value=30, start=0, stop=100, step=5, label="Endgame %",
+    )
+    max_workers = mo.ui.number(
+        value=_os_ui.cpu_count() or 4, start=1, stop=128, step=1,
+        label=f"Max workers (cpu_count={_os_ui.cpu_count()})",
     )
     seed = mo.ui.number(value=42, label="Seed", start=0, stop=2**31 - 1)
     scan_path = mo.ui.text(
@@ -242,12 +135,26 @@ def _(mo):
     mo.vstack(
         [
             output_base,
-            mo.hstack([num_games, test_size, seed]),
+            mo.hstack([valid_target, optimal_target, test_size]),
+            mo.hstack([opening_pct, endgame_pct, max_workers, seed]),
             random_ratio,
+            randomize_start_plies,
             scan_path,
         ]
     )
-    return num_games, output_base, random_ratio, scan_path, seed, test_size
+    return (
+        endgame_pct,
+        max_workers,
+        opening_pct,
+        optimal_target,
+        output_base,
+        random_ratio,
+        randomize_start_plies,
+        scan_path,
+        seed,
+        test_size,
+        valid_target,
+    )
 
 
 @app.cell
@@ -264,30 +171,39 @@ def _(mo):
 
 @app.cell
 def _(
+    endgame_pct,
     generate_optimal_move_dataset,
     generate_valid_move_dataset,
+    max_workers,
     mo,
-    num_games,
+    opening_pct,
     optimal_button,
+    optimal_target,
     output_base,
     random_ratio,
+    randomize_start_plies,
     scan_path,
     seed,
     test_size,
     valid_button,
+    valid_target,
 ):
     import os as _os
 
-    last_paths = None
+    result = None
     error_msg = None
 
     if valid_button.value:
-        last_paths = generate_valid_move_dataset(
-            num_games=num_games.value,
+        result = generate_valid_move_dataset(
+            target_total=int(valid_target.value),
             output_base=output_base.value,
             test_size=test_size.value,
             random_ratio=random_ratio.value,
             seed=int(seed.value),
+            opening_pct=int(opening_pct.value),
+            endgame_pct=int(endgame_pct.value),
+            randomize_start_plies=int(randomize_start_plies.value),
+            max_workers=int(max_workers.value),
         )
     elif optimal_button.value:
         # Try literal scan path then `../<path>` fallback so this notebook
@@ -302,26 +218,49 @@ def _(
                 f"Edit the path field above."
             )
         else:
-            last_paths = generate_optimal_move_dataset(
-                num_games=num_games.value,
+            result = generate_optimal_move_dataset(
+                target_total=int(optimal_target.value),
                 output_base=output_base.value,
                 test_size=test_size.value,
                 scan_path=_resolved,
                 strong_time=0.3,
                 weak_time=0.05,
                 seed=int(seed.value),
+                opening_pct=int(opening_pct.value),
+                endgame_pct=int(endgame_pct.value),
+                randomize_start_plies=int(randomize_start_plies.value),
+                max_workers=int(max_workers.value),
             )
 
     if error_msg is not None:
         view = mo.md(f"⚠️ **{error_msg}**")
-    elif last_paths is None:
+    elif result is None:
         view = mo.md("_click a generate button to start_")
     else:
-        _abs = [(_os.path.abspath(p), p, n) for p, n in last_paths]
-        _lines = ["### wrote:"] + [
-            f"- `{rel}` ({n} rows) → `{abs_}`" for abs_, rel, n in _abs
+        _paths, _var, _games = result
+        _path_lines = ["### wrote:"] + [
+            f"- `{rel}` ({n} rows) → `{_os.path.abspath(rel)}`"
+            for rel, n in _paths
         ]
-        view = mo.md("\n".join(_lines))
+        if isinstance(_var, str):
+            _var_md = _var
+        else:
+            _phase = _var["phase"]
+            _bins = _var["piece_count_bins"]
+            _var_md = (
+                f"### variance ({_var['total']} kept rows, {_games} games)\n"
+                f"- **phase:** opening={_phase['opening']} "
+                f"midgame={_phase['midgame']} endgame={_phase['endgame']}\n"
+                f"- **side W:** {_var['side_W_pct']:.1f}%\n"
+                f"- **forced capture:** {_var['forced_capture_pct']:.1f}%\n"
+                f"- **single legal move:** {_var['single_legal_pct']:.1f}%\n"
+                f"- **kings present:** {_var['kings_present_pct']:.1f}%\n"
+                f"- **piece count:** avg={_var['piece_count_avg']:.1f} "
+                f"min={_var['piece_count_min']} max={_var['piece_count_max']}\n"
+                f"- **piece-count bins:** "
+                + ", ".join(f"{k}={v}" for k, v in _bins.items())
+            )
+        view = mo.md("\n\n".join(["\n".join(_path_lines), _var_md]))
     view
     return
 

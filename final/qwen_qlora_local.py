@@ -6,6 +6,8 @@
 #     "torch==2.11.0",
 #     "transformers",
 #     "trl",
+#     "peft",
+#     "bitsandbytes",
 #     "datasets",
 #     "altair==6.1.0",
 #     "polars==1.40.1",
@@ -30,15 +32,15 @@ def _():
 @app.cell
 def _(mo):
     mo.md("""
-    # GPT-2 SFT — overfitting smoke test
+    # Qwen2.5-0.5B-Instruct QLoRA — overfitting smoke test
 
-    This notebook imports `training-jobs/gpt2_sft.py` and runs it on a tiny
-    slice of `valid_move_smoke.jsonl` for many epochs. The point is to
-    *prove the training loop works* before committing to a long overnight
-    run — if loss collapses toward zero on 20 samples, the loop is fine.
+    Imports `training-jobs/qwen_qlora.py`. Base model loads in 4-bit NF4
+    (with double quantization); a LoRA adapter trains on top using the
+    "LoRA Without Regret" config (r=256, all-linear targets, lr=2e-4,
+    effective batch ≤ 32).
 
-    The same script is what the overnight bash runner will invoke; this
-    notebook is just a thin UI harness around it.
+    The saved artifact is the **adapter only** (a few MB), not a full
+    model — `inference.py` will reattach it to the base at load time.
     """)
     return
 
@@ -48,15 +50,13 @@ def _():
     import os
     import sys
 
-    # training-jobs/ has a hyphen so it can't be imported as a package; add
-    # it to sys.path so the underscore-named modules inside are importable.
     for _candidate in ("training-jobs", "final/training-jobs"):
         if os.path.isdir(_candidate) and _candidate not in sys.path:
             sys.path.insert(0, _candidate)
-    import gpt2_sft
     import inference as inference_mod
+    import qwen_qlora
 
-    return gpt2_sft, inference_mod
+    return inference_mod, qwen_qlora
 
 
 @app.cell
@@ -77,40 +77,39 @@ def _():
 def _(mo):
     mo.md("""
     ## Train
-
-    Trains on the full `valid_move_train.jsonl`. Drop `learning_rate` and
-    bump `epochs` for a longer run.
     """)
     return
 
 
 @app.cell
 def _(mo):
-    run_name = mo.ui.text(value="gpt2-sft", label="Run name")
+    run_name = mo.ui.text(value="qwen-qlora", label="Run name")
     epochs = mo.ui.slider(1, 50, value=10, label="Epochs")
+    lora_r = mo.ui.slider(8, 512, value=256, label="LoRA r", step=8)
     learning_rate = mo.ui.number(
-        start=1e-6, stop=1e-2, value=1e-4, step=1e-5, label="Learning rate"
+        start=1e-5, stop=1e-2, value=2e-4, step=1e-5, label="Learning rate"
     )
     train_button = mo.ui.run_button(label="Train", kind="success")
     mo.vstack(
         [
-            mo.hstack([run_name, learning_rate]),
+            mo.hstack([run_name, learning_rate, lora_r]),
             epochs,
             train_button,
         ]
     )
-    return epochs, learning_rate, run_name, train_button
+    return epochs, learning_rate, lora_r, run_name, train_button
 
 
 @app.cell
-def _(epochs, gpt2_sft, learning_rate, run_name, train_button):
+def _(epochs, learning_rate, lora_r, qwen_qlora, run_name, train_button):
     log_history = []
     last_saved_run = None
     if train_button.value:
-        result = gpt2_sft.train(
+        result = qwen_qlora.train(
             run_name=run_name.value,
             epochs=epochs.value,
             max_samples=None,
+            lora_r=lora_r.value,
             learning_rate=learning_rate.value,
             eval_steps=50,
         )
@@ -153,7 +152,7 @@ def _(log_history, mo):
                 color=alt.Color("split:N", title="split"),
                 tooltip=["step", "value", "split"],
             )
-            .properties(width=600, height=260, title="GPT-2 SFT loss")
+            .properties(width=600, height=260, title="Qwen QLoRA loss")
         )
         _charts = [mo.ui.altair_chart(_loss_line)]
         if _metric_rows:
@@ -182,9 +181,9 @@ def _(mo):
     mo.md("""
     ## Load a checkpoint for inference
 
-    Lists every subdir under `checkpoints/` that contains a `config.json`
-    or `adapter_config.json`, plus the bare `gpt2` baseline. Click
-    **Refresh** after a new training run completes.
+    For QLoRA runs the saved dir contains `adapter_config.json`;
+    `inference.load_model_and_tokenizer` detects that and reattaches the
+    adapter to the base model from HF Hub.
     """)
     return
 
@@ -202,7 +201,7 @@ def _(mo, refresh_button):
     import os as _os
 
     _ = refresh_button.value
-    options = ["gpt2"]
+    options = ["Qwen/Qwen2.5-0.5B-Instruct"]
     if _os.path.isdir("checkpoints"):
         for _name in sorted(_os.listdir("checkpoints")):
             _p = _os.path.join("checkpoints", _name)
@@ -258,10 +257,6 @@ def _(inference_model, inference_path, inference_tokenizer, torch):
 def _(mo):
     mo.md("""
     ## Smoke test
-
-    Builds a fresh `LLMAgent` and asks it for one move on the initial
-    board. An overfit GPT-2 should reproduce one of the moves it
-    memorized from the training set.
     """)
     return
 
