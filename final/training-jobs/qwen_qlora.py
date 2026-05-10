@@ -31,9 +31,9 @@ def train(
     lora_r: int = 256,
     lora_alpha: int = 16,
     learning_rate: float = 2e-4,
-    eval_steps: int = 50,
+    eval_steps: int = 100,
     test_size: float = 0.1,
-    eval_metric_samples: int = 64,
+    eval_metric_samples: int = 16,
 ):
     import torch
     from peft import LoraConfig, prepare_model_for_kbit_training
@@ -154,6 +154,8 @@ def main():
     p.add_argument("--lora-alpha", type=int, default=16)
     p.add_argument("--learning-rate", type=float, default=2e-4)
     p.add_argument("--test-size", type=float, default=0.1)
+    p.add_argument("--eval-steps", type=int, default=100)
+    p.add_argument("--eval-metric-samples", type=int, default=16)
     a = p.parse_args()
     train(
         run_name=a.run_name,
@@ -167,6 +169,8 @@ def main():
         lora_alpha=a.lora_alpha,
         learning_rate=a.learning_rate,
         test_size=a.test_size,
+        eval_steps=a.eval_steps,
+        eval_metric_samples=a.eval_metric_samples,
     )
 
 

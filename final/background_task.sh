@@ -47,12 +47,23 @@ elapsed_since() {
   printf '%dm%02ds' $(( (now - since) / 60 )) $(( (now - since) % 60 ))
 }
 
+DPO_RUN="${DPO_RUN:-qwen-dpo}"
+DPO_EPOCHS="${DPO_EPOCHS:-3}"
+DPO_BETA="${DPO_BETA:-0.1}"
+DPO_LR="${DPO_LR:-1e-5}"
+MERGED_BASE="${MERGED_BASE:-checkpoints/${QLORA_RUN}-merged}"
+
 section "config"
 echo "  PYTHON         = $PYTHON"
 echo "  SFT_TARGET     = $SFT_TARGET"
 echo "  DPO_TARGET     = $DPO_TARGET"
 echo "  QLORA_EPOCHS   = $QLORA_EPOCHS"
 echo "  QLORA_RUN      = $QLORA_RUN"
+echo "  MERGED_BASE    = $MERGED_BASE"
+echo "  DPO_RUN        = $DPO_RUN"
+echo "  DPO_EPOCHS     = $DPO_EPOCHS"
+echo "  DPO_BETA       = $DPO_BETA"
+echo "  DPO_LR         = $DPO_LR"
 echo "  SCAN_PATH      = $SCAN_PATH"
 echo "  SKIP_EXISTING  = $SKIP_EXISTING"
 echo "  LOG_FILE       = $LOG_FILE"
@@ -105,5 +116,42 @@ else
     --dataset valid_move_train.jsonl
 fi
 echo "stage 3 done in $(elapsed_since "$qlora_start")"
+
+# ---- Stage 4: merge QLoRA adapter into a full model -------------------
+# DPO needs a self-contained checkpoint (config.json + safetensors) for
+# AutoModelForCausalLM.from_pretrained, not an adapter. Merge once.
+MERGED_BASE="${MERGED_BASE:-checkpoints/${QLORA_RUN}-merged}"
+section "stage 4: merge ${QLORA_RUN} adapter -> ${MERGED_BASE}"
+merge_start=$(date +%s)
+if [[ "$SKIP_EXISTING" == "1" && -f "${MERGED_BASE}/DONE" ]]; then
+  echo "  ${MERGED_BASE}/DONE exists — skipping"
+else
+  "$PYTHON" training-jobs/merge_adapter.py \
+    --adapter-path "checkpoints/${QLORA_RUN}" \
+    --output-path "$MERGED_BASE"
+fi
+echo "stage 4 done in $(elapsed_since "$merge_start")"
+
+# ---- Stage 5: DPO training on the merged base -------------------------
+DPO_RUN="${DPO_RUN:-qwen-dpo}"
+DPO_EPOCHS="${DPO_EPOCHS:-3}"
+DPO_BETA="${DPO_BETA:-0.1}"
+DPO_LR="${DPO_LR:-1e-5}"
+section "stage 5: DPO training (epochs=$DPO_EPOCHS, run=$DPO_RUN, beta=$DPO_BETA, lr=$DPO_LR)"
+dpo_train_start=$(date +%s)
+dpo_done="checkpoints/${DPO_RUN}/DONE"
+if [[ "$SKIP_EXISTING" == "1" && -f "$dpo_done" ]]; then
+  echo "  $dpo_done exists — skipping"
+else
+  "$PYTHON" training-jobs/qwen_dpo.py \
+    --run-name "$DPO_RUN" \
+    --epochs "$DPO_EPOCHS" \
+    --dataset optimal_move_train.jsonl \
+    --base-model "$MERGED_BASE" \
+    --beta "$DPO_BETA" \
+    --learning-rate "$DPO_LR" \
+    --peft
+fi
+echo "stage 5 done in $(elapsed_since "$dpo_train_start")"
 
 section "all done in $(elapsed_since "$start_ts")"

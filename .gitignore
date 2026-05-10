@@ -9,3 +9,5 @@ scan
 __pycache__
 checkpoints/
 background_task.log
+
+final/*.jsonl

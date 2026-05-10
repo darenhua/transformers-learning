@@ -32,9 +32,9 @@ def train(
     learning_rate: float | None = None,
     beta: float = 0.1,
     use_peft: bool = False,
-    eval_steps: int = 50,
+    eval_steps: int = 100,
     test_size: float = 0.1,
-    eval_metric_samples: int = 64,
+    eval_metric_samples: int = 16,
 ):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -165,6 +165,8 @@ def main():
     p.add_argument("--beta", type=float, default=0.1)
     p.add_argument("--peft", action="store_true", help="train a LoRA adapter on top")
     p.add_argument("--test-size", type=float, default=0.1)
+    p.add_argument("--eval-steps", type=int, default=100)
+    p.add_argument("--eval-metric-samples", type=int, default=16)
     a = p.parse_args()
     train(
         run_name=a.run_name,
@@ -178,6 +180,8 @@ def main():
         beta=a.beta,
         use_peft=a.peft,
         test_size=a.test_size,
+        eval_steps=a.eval_steps,
+        eval_metric_samples=a.eval_metric_samples,
     )
 
 
